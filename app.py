@@ -329,10 +329,8 @@ elif page == "Attendance":
             text=att["Attend./G"].apply(lambda x: f"{x:,.0f}"),
             textposition="outside", textfont=dict(size=9, color="#9ca3af")
         ))
-        fig.update_layout(**PLOTLY_THEME, height=700,
-                          xaxis=dict(tickformat=",", gridcolor="#1a1d22", linecolor="#1f2329"),
-                          yaxis=dict(gridcolor="#1a1d22", linecolor="#1f2329"),
-                          showlegend=False)
+        fig.update_layout(**PLOTLY_THEME, height=700, showlegend=False)
+        fig.update_xaxes(tickformat=",")
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
