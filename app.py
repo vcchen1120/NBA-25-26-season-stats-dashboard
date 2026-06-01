@@ -64,6 +64,9 @@ def load_data():
     df3 = df3.rename(columns={"PTS": "PPG", "AST": "APG", "TRB": "RPG",
                                 "STL": "SPG", "BLK": "BPG", "TOV": "TOPG",
                                 "FG%": "FG%", "3P%": "3P%", "FT%": "FT%"})
+    for _col in ["PPG","APG","RPG","SPG","BPG","TOPG","FG%","3P%","FT%","3PA","FTA","ORB","DRB","PF"]:
+        if _col in df3.columns:
+            df3[_col] = pd.to_numeric(df3[_col], errors="coerce")
 
     # Sheet 4 - Advanced
     df4r = pd.read_excel("nba_25-26_stats.xlsx", sheet_name="工作表4", header=None)
@@ -79,7 +82,7 @@ def load_data():
         if col in df4.columns:
             df4[col] = pd.to_numeric(df4[col], errors="coerce")
 
-    return df1, pd.DataFrame(east), pd.DataFrame(west), df3, df4
+    return df1, pd.DataFrame(east).reset_index(drop=True), pd.DataFrame(west).reset_index(drop=True), df3, df4
 
 df1, east_df, west_df, df3, df4 = load_data()
 
@@ -109,7 +112,7 @@ if page == "Overview":
     st.caption("2025–26 Regular Season · All 30 Teams")
 
     # KPI Row
-    all_teams = pd.concat([east_df, west_df])
+    all_teams = pd.concat([east_df, west_df]).reset_index(drop=True)
     top_team = all_teams.loc[all_teams["W"].idxmax()]
     playoff_count = len(all_teams[all_teams["Playoff"] == "✅"])
 
@@ -117,7 +120,7 @@ if page == "Overview":
     c1.metric("Avg PPG", f"{df3['PPG'].mean():.1f}")
     c2.metric("Avg APG", f"{df3['APG'].mean():.1f}")
     c3.metric("Avg RPG", f"{df3['RPG'].mean():.1f}")
-    c4.metric("Best Record", f"{top_team['W']}-{top_team['L']}", top_team["Team"])
+    c4.metric("Best Record", f"{top_team['W']}-{top_team['L']}", str(top_team["Team"]))
     c5.metric("Playoff Teams", playoff_count)
 
     st.markdown("---")
@@ -191,7 +194,7 @@ elif page == "Standings":
     all_teams = pd.concat([
         east_df.assign(Conf="East"),
         west_df.assign(Conf="West")
-    ]).sort_values("W", ascending=False).head(20)
+    ]).reset_index(drop=True).sort_values("W", ascending=False).head(20)
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
