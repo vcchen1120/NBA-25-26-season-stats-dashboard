@@ -73,6 +73,7 @@ def load_data():
     df4 = df4[1:].reset_index(drop=True)
     df4 = df4[df4["Rk"].apply(lambda x: str(x).strip().isdigit())].copy()
     df4["Team"] = df4["Team"].apply(clean)
+    df4 = df4.loc[:, ~df4.columns.duplicated()].copy()
     for col in ["ORtg", "DRtg", "NRtg", "Pace", "TS%", "eFG%", "TOV%", "ORB%",
                 "W", "L", "Age", "Attend.", "Attend./G"]:
         if col in df4.columns:
