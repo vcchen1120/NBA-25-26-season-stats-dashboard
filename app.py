@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pipeline import (
     run_pipeline, db_exists,
-    read_pergame, read_standings, read_advanced, read_pipeline_log, last_updated
+    read_pergame, read_standings, read_advanced, read_players, read_pipeline_log, last_updated
 )
 
 st.set_page_config(
@@ -66,7 +66,7 @@ src_badge = (f'<span class="source-badge badge-api">🟢 NBA API</span>'
 with st.sidebar:
     st.markdown("## 🏀 NBA 25-26")
     st.markdown("---")
-    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance"])
+    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance", "Pipeline Log"])
     st.markdown("---")
 
     st.markdown(f"**Last Updated**  \n`{ts}`")
@@ -366,3 +366,168 @@ nba_25-26_stats.xlsx  (Excel fallback)
   app.py  (Streamlit)
   └── @st.cache_data (TTL 300s)
     """, language="text")
+
+# ── PLAYERS (injected) ────────────────────────────────────────────────────────
+
+# ── PLAYERS ───────────────────────────────────────────────────────────────────
+elif page == "Players":
+    st.title("PLAYERS")
+    st.caption("Per Game Stats · 661 Players · 30 Teams")
+
+    @st.cache_data(ttl=300)
+    def get_players():
+        return read_players()
+
+    all_players = get_players()
+    NUM_COLS = ["G","GS","MP","FG","FGA","FG%","3P","3PA","3P%",
+                "FT","FTA","FT%","ORB","DRB","TRB","AST","STL","BLK","TOV","PF","PTS","eFG%"]
+    for c in NUM_COLS:
+        if c in all_players.columns:
+            all_players[c] = pd.to_numeric(all_players[c], errors="coerce")
+
+    tab1, tab2, tab3 = st.tabs(["🏀 Team Roster", "📊 League Rankings", "⚖️ Player Comparison"])
+
+    # ── TAB 1: Team Roster → Player Detail ───────────────────────────────────
+    with tab1:
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            teams = sorted(all_players["Team"].unique())
+            selected_team = st.selectbox("Select Team", teams)
+            roster = all_players[all_players["Team"] == selected_team].copy()
+            roster_display = roster[["Player","Pos","Age","G","PTS","AST","TRB"]].copy()
+            roster_display["PTS"] = roster_display["PTS"].round(1)
+            roster_display["AST"] = roster_display["AST"].round(1)
+            roster_display["TRB"] = roster_display["TRB"].round(1)
+            selected_player = st.selectbox("Select Player", roster["Player"].tolist())
+
+        with col2:
+            p = roster[roster["Player"] == selected_player].iloc[0]
+            st.subheader(f"{selected_player}")
+            st.caption(f"{selected_team} · {p.get('Pos','–')} · Age {int(p['Age']) if pd.notna(p['Age']) else '–'} · {int(p['G']) if pd.notna(p['G']) else '–'} GP")
+
+            m1,m2,m3,m4,m5 = st.columns(5)
+            m1.metric("PPG",  f"{p['PTS']:.1f}"  if pd.notna(p.get('PTS'))  else "–")
+            m2.metric("APG",  f"{p['AST']:.1f}"  if pd.notna(p.get('AST'))  else "–")
+            m3.metric("RPG",  f"{p['TRB']:.1f}"  if pd.notna(p.get('TRB'))  else "–")
+            m4.metric("STL",  f"{p['STL']:.1f}"  if pd.notna(p.get('STL'))  else "–")
+            m5.metric("BLK",  f"{p['BLK']:.1f}"  if pd.notna(p.get('BLK'))  else "–")
+
+            st.markdown("---")
+            # Shooting radar bar
+            shoot_cats  = ["FG%","3P%","FT%","eFG%"]
+            shoot_vals  = [float(p[c])*100 if pd.notna(p.get(c)) else 0 for c in shoot_cats]
+            fig = go.Figure(go.Bar(
+                x=shoot_cats, y=shoot_vals,
+                marker_color=[GOLD,"rgba(200,168,75,0.6)","rgba(200,168,75,0.4)","rgba(224,92,46,0.7)"],
+                text=[f"{v:.1f}%" for v in shoot_vals], textposition="outside",
+                textfont=dict(size=11, color="#9ca3af")
+            ))
+            fig.update_layout(**THEME, height=240, showlegend=False,
+                              yaxis_range=[0, 105], title_text="Shooting %")
+            fig.update_xaxes(**AXIS); fig.update_yaxes(**AXIS)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Full stats table
+            stat_cols = [c for c in ["G","GS","MP","PTS","AST","TRB","STL","BLK","TOV","FG%","3P%","FT%","eFG%"] if c in roster.columns]
+            st.dataframe(roster[["Player"]+stat_cols].set_index("Player"), use_container_width=True)
+
+    # ── TAB 2: League Rankings ────────────────────────────────────────────────
+    with tab2:
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            rank_stat = st.selectbox("Rank by", ["PTS","AST","TRB","STL","BLK","FG%","3P%","FT%","eFG%"])
+            min_games = st.slider("Min games played", 10, 82, 30)
+            top_n     = st.slider("Show top N", 10, 50, 20)
+            pos_filter = st.multiselect("Position", ["PG","SG","SF","PF","C"], default=[])
+
+        with col2:
+            filtered = all_players[all_players["G"] >= min_games].copy()
+            if pos_filter:
+                filtered = filtered[filtered["Pos"].isin(pos_filter)]
+            filtered = filtered.dropna(subset=[rank_stat])
+            top = filtered.nlargest(top_n, rank_stat)
+
+            colors = [GOLD if i == 0 else ("rgba(200,168,75,0.5)" if i < 3 else "rgba(200,168,75,0.2)") for i in range(len(top))]
+            label_col = rank_stat + "%" if "%" not in rank_stat else rank_stat
+            text_vals = [(f"{v*100:.1f}%" if "%" in rank_stat else f"{v:.1f}") for v in top[rank_stat]]
+
+            fig = go.Figure(go.Bar(
+                x=top[rank_stat] * (100 if "%" in rank_stat else 1),
+                y=top["Player"] + " (" + top["Team"].str.split().str[-1] + ")",
+                orientation="h", marker_color=colors,
+                text=text_vals, textposition="outside",
+                textfont=dict(size=10, color="#9ca3af")
+            ))
+            fig.update_layout(**THEME, height=max(400, top_n*22), showlegend=False,
+                              title_text=f"Top {top_n} — {rank_stat}")
+            fig.update_xaxes(**AXIS); fig.update_yaxes(**AXIS)
+            st.plotly_chart(fig, use_container_width=True)
+
+    # ── TAB 3: Player Comparison ──────────────────────────────────────────────
+    with tab3:
+        c1, c2 = st.columns(2)
+        with c1:
+            t1 = st.selectbox("Team A", sorted(all_players["Team"].unique()), key="cmp_t1")
+            p1_list = all_players[all_players["Team"]==t1]["Player"].tolist()
+            p1_name = st.selectbox("Player A", p1_list, key="cmp_p1")
+        with c2:
+            t2 = st.selectbox("Team B", sorted(all_players["Team"].unique()), index=1, key="cmp_t2")
+            p2_list = all_players[all_players["Team"]==t2]["Player"].tolist()
+            p2_name = st.selectbox("Player B", p2_list, key="cmp_p2")
+
+        p1 = all_players[all_players["Player"]==p1_name].iloc[0]
+        p2 = all_players[all_players["Player"]==p2_name].iloc[0]
+
+        cmp_stats = ["PTS","AST","TRB","STL","BLK","MP","FG%","3P%","FT%"]
+        cmp_stats = [c for c in cmp_stats if c in all_players.columns]
+
+        # KPI comparison row
+        cols = st.columns(len(cmp_stats))
+        for i, stat in enumerate(cmp_stats):
+            v1 = float(p1[stat]) if pd.notna(p1.get(stat)) else 0
+            v2 = float(p2[stat]) if pd.notna(p2.get(stat)) else 0
+            fmt = lambda v: f"{v*100:.1f}%" if "%" in stat else f"{v:.1f}"
+            delta = v1 - v2
+            cols[i].metric(stat, fmt(v1), f"{'+' if delta>=0 else ''}{fmt(delta)} vs {p2_name.split()[-1]}")
+
+        st.markdown("---")
+        # Radar-style grouped bar
+        vals1 = []
+        vals2 = []
+        labels = []
+        for stat in ["PTS","AST","TRB","STL","BLK"]:
+            if stat in all_players.columns:
+                labels.append(stat)
+                vals1.append(float(p1[stat]) if pd.notna(p1.get(stat)) else 0)
+                vals2.append(float(p2[stat]) if pd.notna(p2.get(stat)) else 0)
+
+        fig = go.Figure()
+        fig.add_trace(go.Bar(name=p1_name, x=labels, y=vals1,
+                             marker_color=GOLD, text=[f"{v:.1f}" for v in vals1],
+                             textposition="outside"))
+        fig.add_trace(go.Bar(name=p2_name, x=labels, y=vals2,
+                             marker_color="rgba(58,123,213,0.8)", text=[f"{v:.1f}" for v in vals2],
+                             textposition="outside"))
+        fig.update_layout(**THEME, barmode="group", height=360,
+                          legend=dict(font=dict(size=12,color="#9ca3af")),
+                          title_text=f"{p1_name} vs {p2_name}")
+        fig.update_xaxes(**AXIS); fig.update_yaxes(**AXIS)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Shooting comparison
+        shoot = ["FG%","3P%","FT%","eFG%"]
+        shoot = [c for c in shoot if c in all_players.columns]
+        sv1 = [float(p1[c])*100 if pd.notna(p1.get(c)) else 0 for c in shoot]
+        sv2 = [float(p2[c])*100 if pd.notna(p2.get(c)) else 0 for c in shoot]
+        fig2 = go.Figure()
+        fig2.add_trace(go.Bar(name=p1_name, x=shoot, y=sv1, marker_color=GOLD,
+                              text=[f"{v:.1f}%" for v in sv1], textposition="outside"))
+        fig2.add_trace(go.Bar(name=p2_name, x=shoot, y=sv2,
+                              marker_color="rgba(58,123,213,0.8)",
+                              text=[f"{v:.1f}%" for v in sv2], textposition="outside"))
+        fig2.update_layout(**THEME, barmode="group", height=300,
+                           legend=dict(font=dict(size=12,color="#9ca3af")),
+                           title_text="Shooting Efficiency Comparison",
+                           yaxis_range=[0,105])
+        fig2.update_xaxes(**AXIS); fig2.update_yaxes(**AXIS)
+        st.plotly_chart(fig2, use_container_width=True)
