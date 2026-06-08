@@ -71,19 +71,26 @@ def parse_excel(buf):
     for col in ["ORtg","DRtg","NRtg","Pace","TS%","eFG%","TOV%","ORB%","Age","Attend.","Attend./G","MOV","SOS","SRS","FTr","3PAr"]:
         if col in adv.columns: adv[col] = pd.to_numeric(adv[col], errors="coerce")
 
-    # ── Player sheets (工作表5~36 except 1-4) ──────────────────────────────────
-    player_sheets = [s for s in xl.sheet_names if s not in ["工作表1","工作表2","工作表3","工作表4"]]
-    valid_sheets = []
-    for s in player_sheets:
-        df = pd.read_excel(buf, sheet_name=s); buf.seek(0)
-        if df.shape[0] > 0 and "Player" in df.columns:
-            valid_sheets.append(s)
-
-    team_list = standings["team"].tolist()
+    # ── Player sheets — hardcoded mapping per user spec ──────────────────────
+    SHEET_TEAM_MAP = {
+        '工作表7':  'Denver Nuggets',       '工作表8':  'Miami Heat',
+        '工作表9':  'San Antonio Spurs',     '工作表10': 'Cleveland Cavaliers',
+        '工作表11': 'Oklahoma City Thunder', '工作表12': 'Atlanta Hawks',
+        '工作表13': 'Minnesota Timberwolves','工作表14': 'Detroit Pistons',
+        '工作表15': 'Utah Jazz',             '工作表16': 'New York Knicks',
+        '工作表17': 'Chicago Bulls',         '工作表18': 'Los Angeles Lakers',
+        '工作表19': 'Charlotte Hornets',     '工作表20': 'Philadelphia 76ers',
+        '工作表22': 'Orlando Magic',         '工作表23': 'Portland Trail Blazers',
+        '工作表5':  'New Orleans Pelicans',  '工作表24': 'Houston Rockets',
+        '工作表25': 'Boston Celtics',        '工作表26': 'Memphis Grizzlies',
+        '工作表27': 'Golden State Warriors', '工作表28': 'Toronto Raptors',
+        '工作表29': 'Dallas Mavericks',      '工作表30': 'Los Angeles Clippers',
+        '工作表31': 'Washington Wizards',    '工作表32': 'Phoenix Suns',
+        '工作表33': 'Indiana Pacers',        '工作表34': 'Sacramento Kings',
+        '工作表35': 'Milwaukee Bucks',       '工作表36': 'Brooklyn Nets',
+    }
     all_players = []
-    for i, sheet in enumerate(valid_sheets):
-        if i >= len(team_list): break
-        team_name = team_list[i]
+    for sheet, team_name in SHEET_TEAM_MAP.items():
         df = pd.read_excel(buf, sheet_name=sheet); buf.seek(0)
         # First column is rank (may be "Rk" or "Unnamed: 0")
         rank_col = df.columns[0]
