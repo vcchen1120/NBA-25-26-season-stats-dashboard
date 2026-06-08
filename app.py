@@ -1,8 +1,11 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import re
+import plotly.express as px
+from pipeline import (
+    run_pipeline, db_exists,
+    read_pergame, read_standings, read_advanced, read_totals, read_pipeline_log, last_updated
+)
 
 st.set_page_config(
     page_title="NBA 25-26 Dashboard",
@@ -11,202 +14,186 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Mono:wght@400;500&display=swap');
-.main { background-color: #07080a; }
-h1, h2, h3 { font-family: 'Bebas Neue', sans-serif; letter-spacing: 2px; }
-.metric-card {
-    background: #0f1114; border: 1px solid #1f2329; border-radius: 10px;
-    padding: 16px 20px; text-align: center;
+h1,h2,h3{font-family:'Bebas Neue',sans-serif;letter-spacing:2px}
+.stMetric{background:#0f1114;border:1px solid #1f2329;border-radius:10px;padding:12px}
+div[data-testid="stMetricValue"]{font-size:2rem;color:#c8a84b}
+div[data-testid="stMetricLabel"]{color:#6b7280;font-size:11px;letter-spacing:1px}
+.source-badge{
+    display:inline-block;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:600;
+    font-family:'DM Mono',monospace;letter-spacing:1px
 }
-.metric-label { font-size: 11px; color: #6b7280; letter-spacing: 1.5px; text-transform: uppercase; }
-.metric-value { font-size: 32px; font-weight: 700; color: #c8a84b; }
-.playoff { color: #22c55e; font-weight: 600; }
+.badge-api{background:rgba(34,197,94,0.15);color:#22c55e;border:1px solid rgba(34,197,94,0.3)}
+.badge-excel{background:rgba(200,168,75,0.15);color:#c8a84b;border:1px solid rgba(200,168,75,0.3)}
 </style>
 """, unsafe_allow_html=True)
 
-# ── ETL Pipeline ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=300)
-def load_data():
-    def clean(name):
-        if not isinstance(name, str): return name
-        return re.sub(r'\s*\(\d+\)', '', name).replace('*', '').strip()
-
-    # Sheet 1 - Totals
-    df1 = pd.read_excel("nba_25-26_stats.xlsx", sheet_name="工作表1")
-    df1["Team"] = df1["Team"].apply(clean)
-
-    # Sheet 2 - Standings
-    df2 = pd.read_excel("nba_25-26_stats.xlsx", sheet_name="工作表2")
-    df2.columns = ["Team", "W", "L", "WL_pct", "GB", "PS_G", "PA_G", "SRS"]
-    east, west = [], []
-    conf = "East"
-    for _, row in df2.iterrows():
-        name = str(row["Team"]).strip()
-        if "Eastern" in name: conf = "East"; continue
-        if "Western" in name: conf = "West"; continue
-        try: w = int(row["W"])
-        except: continue
-        entry = {
-            "Team": clean(name), "W": int(row["W"]), "L": int(row["L"]),
-            "WL%": float(row["WL_pct"]), "PS/G": float(row["PS_G"]),
-            "PA/G": float(row["PA_G"]), "SRS": float(row["SRS"]),
-            "Playoff": "✅" if "*" in str(row["Team"]) else ""
-        }
-        (east if conf == "East" else west).append(entry)
-
-    # Sheet 3 - Per Game
-    df3 = pd.read_excel("nba_25-26_stats.xlsx", sheet_name="工作表3")
-    df3 = df3[df3["Rk"].apply(lambda x: str(x).isdigit())].copy()
-    df3["Team"] = df3["Team"].apply(clean)
-    df3 = df3.rename(columns={"PTS": "PPG", "AST": "APG", "TRB": "RPG",
-                                "STL": "SPG", "BLK": "BPG", "TOV": "TOPG",
-                                "FG%": "FG%", "3P%": "3P%", "FT%": "FT%"})
-    for _col in ["PPG","APG","RPG","SPG","BPG","TOPG","FG%","3P%","FT%","3PA","FTA","ORB","DRB","PF"]:
-        if _col in df3.columns:
-            df3[_col] = pd.to_numeric(df3[_col], errors="coerce")
-
-    # Sheet 4 - Advanced
-    df4r = pd.read_excel("nba_25-26_stats.xlsx", sheet_name="工作表4", header=None)
-    hr = df4r[df4r.iloc[:, 0] == "Rk"].index[0]
-    df4 = df4r.iloc[hr:].copy()
-    df4.columns = df4.iloc[0]
-    df4 = df4[1:].reset_index(drop=True)
-    df4 = df4[df4["Rk"].apply(lambda x: str(x).strip().isdigit())].copy()
-    df4["Team"] = df4["Team"].apply(clean)
-    df4 = df4.loc[:, ~df4.columns.duplicated()].copy()
-    for col in ["ORtg", "DRtg", "NRtg", "Pace", "TS%", "eFG%", "TOV%", "ORB%",
-                "W", "L", "Age", "Attend.", "Attend./G"]:
-        if col in df4.columns:
-            df4[col] = pd.to_numeric(df4[col], errors="coerce")
-
-    return df1, pd.DataFrame(east).reset_index(drop=True), pd.DataFrame(west).reset_index(drop=True), df3, df4
-
-df1, east_df, west_df, df3, df4 = load_data()
-
 GOLD = "#c8a84b"
-PLOTLY_THEME = dict(
+THEME = dict(
     plot_bgcolor="#07080a", paper_bgcolor="#07080a",
     font=dict(color="#9ca3af", family="DM Mono"),
-    xaxis=dict(gridcolor="#1a1d22", linecolor="#1f2329"),
-    yaxis=dict(gridcolor="#1a1d22", linecolor="#1f2329"),
     margin=dict(l=10, r=10, t=30, b=10)
 )
+AXIS = dict(gridcolor="#1a1d22", linecolor="#1f2329",
+            ticks="", tickfont=dict(size=10))
+
+# ── Bootstrap DB on first run ─────────────────────────────────────────────────
+if not db_exists():
+    with st.spinner("⚙️ 首次啟動：正在建立資料庫..."):
+        run_pipeline()
+
+# ── Load data from SQLite ─────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load():
+    pg  = read_pergame()
+    st_ = read_standings()
+    adv = read_advanced()
+    return pg, st_, adv
+
+pg, standings, adv = load()
+east_df = standings[standings["conference"] == "East"].reset_index(drop=True)
+west_df = standings[standings["conference"] == "West"].reset_index(drop=True)
+all_teams = standings.reset_index(drop=True)
+
+ts, src = last_updated()
+src_badge = (f'<span class="source-badge badge-api">🟢 NBA API</span>'
+             if src == "nba_api"
+             else f'<span class="source-badge badge-excel">🟡 Excel Fallback</span>')
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## 🏀 NBA 25-26")
     st.markdown("---")
-    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance"])
+    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance", "Pipeline Log"])
     st.markdown("---")
-    if st.button("🔄 Refresh Data"):
+
+    st.markdown(f"**Last Updated**  \n`{ts}`")
+    st.markdown(f"**Source** {src_badge}", unsafe_allow_html=True)
+    st.markdown("")
+
+    if st.button("🔄 Refresh from NBA API"):
         st.cache_data.clear()
+        with st.spinner("Running ETL pipeline..."):
+            source_used = run_pipeline()
+        st.success(f"✓ Updated from **{source_used}**")
         st.rerun()
-    st.caption("Data: NBA 2025-26 Regular Season")
+
+    st.caption("Data: NBA 2025-26 Regular Season  \nPipeline: nba_api → SQLite")
 
 # ── OVERVIEW ──────────────────────────────────────────────────────────────────
 if page == "Overview":
     st.title("LEAGUE OVERVIEW")
     st.caption("2025–26 Regular Season · All 30 Teams")
 
-    # KPI Row
-    all_teams = pd.concat([east_df, west_df]).reset_index(drop=True)
-    top_team = all_teams.loc[all_teams["W"].idxmax()]
-    playoff_count = len(all_teams[all_teams["Playoff"] == "✅"])
+    top_idx  = all_teams["W"].idxmax()
+    top_team = all_teams.loc[top_idx]
+    playoff_n = len(all_teams[all_teams["playoff"] == 1])
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Avg PPG", f"{df3['PPG'].mean():.1f}")
-    c2.metric("Avg APG", f"{df3['APG'].mean():.1f}")
-    c3.metric("Avg RPG", f"{df3['RPG'].mean():.1f}")
-    c4.metric("Best Record", f"{top_team['W']}-{top_team['L']}", str(top_team["Team"]))
-    c5.metric("Playoff Teams", playoff_count)
+    c1,c2,c3,c4,c5 = st.columns(5)
+    c1.metric("Avg PPG",    f"{pg['PPG'].mean():.1f}")
+    c2.metric("Avg APG",    f"{pg['APG'].mean():.1f}")
+    c3.metric("Avg RPG",    f"{pg['RPG'].mean():.1f}")
+    c4.metric("Best Record",f"{int(top_team['W'])}-{int(top_team['L'])}", str(top_team["team"]))
+    c5.metric("Playoff Teams", playoff_n)
 
     st.markdown("---")
     col1, col2 = st.columns([3, 2])
 
     with col1:
         st.subheader("Points Per Game — All Teams")
-        sorted_ppg = df3.sort_values("PPG", ascending=True)
-        colors = [GOLD if i >= len(sorted_ppg)-3 else "rgba(200,168,75,0.25)"
-                  for i in range(len(sorted_ppg))]
+        spg = pg.sort_values("PPG", ascending=True)
+        n   = len(spg)
+        colors = [GOLD if i >= n-3 else "rgba(200,168,75,0.25)" for i in range(n)]
         fig = go.Figure(go.Bar(
-            x=sorted_ppg["PPG"], y=sorted_ppg["Team"],
-            orientation="h", marker_color=colors,
-            text=sorted_ppg["PPG"], textposition="outside",
-            textfont=dict(size=10, color="#9ca3af")
+            x=spg["PPG"], y=spg["Team"], orientation="h",
+            marker_color=colors,
+            text=spg["PPG"].round(1), textposition="outside",
+            textfont=dict(size=9, color="#9ca3af")
         ))
-        fig.update_layout(**PLOTLY_THEME, height=650, showlegend=False)
+        fig.update_layout(**THEME, height=680, showlegend=False)
+        fig.update_xaxes(**AXIS, range=[95, spg["PPG"].max()+3])
+        fig.update_yaxes(**AXIS)
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.subheader("Win % Distribution")
-        bins = ["Elite\n(70%+)", "Good\n(55-70%)", "Average\n(45-55%)", "Rebuilding\n(<45%)"]
+        labels = ["Elite (70%+)", "Good (55-70%)", "Average (45-55%)", "Rebuilding (<45%)"]
         counts = [
-            len(all_teams[all_teams["WL%"] >= 0.7]),
-            len(all_teams[(all_teams["WL%"] >= 0.55) & (all_teams["WL%"] < 0.7)]),
-            len(all_teams[(all_teams["WL%"] >= 0.45) & (all_teams["WL%"] < 0.55)]),
-            len(all_teams[all_teams["WL%"] < 0.45]),
+            len(all_teams[all_teams["WL_pct"] >= 0.7]),
+            len(all_teams[(all_teams["WL_pct"] >= 0.55) & (all_teams["WL_pct"] < 0.7)]),
+            len(all_teams[(all_teams["WL_pct"] >= 0.45) & (all_teams["WL_pct"] < 0.55)]),
+            len(all_teams[all_teams["WL_pct"] < 0.45]),
         ]
         fig2 = go.Figure(go.Pie(
-            labels=bins, values=counts, hole=0.5,
-            marker_colors=[GOLD, "rgba(200,168,75,0.55)", "rgba(200,168,75,0.25)", "rgba(224,92,46,0.4)"],
-            textfont=dict(size=11)
+            labels=labels, values=counts, hole=0.5,
+            marker_colors=[GOLD, "rgba(200,168,75,0.55)", "rgba(200,168,75,0.2)", "rgba(224,92,46,0.4)"],
         ))
-        fig2.update_layout(**PLOTLY_THEME, height=300, showlegend=True,
-                           legend=dict(font=dict(size=10)))
+        fig2.update_layout(**THEME, height=280,
+                           legend=dict(font=dict(size=10), orientation="h",
+                                       y=-0.15, x=0))
         st.plotly_chart(fig2, use_container_width=True)
 
-        st.subheader("Top Scoring Teams")
-        top5 = df3.nlargest(5, "PPG")[["Team", "PPG", "APG", "RPG"]]
-        st.dataframe(top5.set_index("Team"), use_container_width=True)
+        st.subheader("Top 5 Scoring Teams")
+        top5 = pg.nlargest(5, "PPG")[["Team","PPG","APG","RPG"]].reset_index(drop=True)
+        top5.index += 1
+        st.dataframe(top5, use_container_width=True)
 
-    # Shooting Efficiency
     st.subheader("Shooting Efficiency — Top 10")
-    top10 = df3.nlargest(10, "PPG")
+    top10 = pg.nlargest(10, "PPG").copy()
     fig3 = go.Figure()
     fig3.add_trace(go.Bar(name="FG%", x=top10["Team"],
-                          y=(top10["FG%"]*100).round(1),
+                          y=(top10["FG_PCT"]*100).round(1),
                           marker_color="rgba(200,168,75,0.7)"))
     fig3.add_trace(go.Bar(name="3P%", x=top10["Team"],
-                          y=(top10["3P%"]*100).round(1),
+                          y=(top10["FG3_PCT"]*100).round(1),
                           marker_color="rgba(224,92,46,0.7)"))
-    fig3.update_layout(**PLOTLY_THEME, barmode="group", height=300,
+    fig3.update_layout(**THEME, barmode="group", height=300,
                        legend=dict(font=dict(size=11, color="#9ca3af")))
+    fig3.update_xaxes(**AXIS)
+    fig3.update_yaxes(**AXIS)
     st.plotly_chart(fig3, use_container_width=True)
 
 # ── STANDINGS ─────────────────────────────────────────────────────────────────
 elif page == "Standings":
     st.title("STANDINGS")
-    st.caption("* = Playoff Qualified")
+    st.caption("✅ = Playoff Qualified")
+
+    def fmt_standings(df):
+        d = df.copy()
+        d["WL%"]  = (d["WL_pct"] * 100).round(1).astype(str) + "%"
+        d["Playoff"] = d["playoff"].apply(lambda x: "✅" if x == 1 else "")
+        cols = ["team","W","L","WL%","PS_G","PA_G","SRS","Playoff"]
+        cols = [c for c in cols if c in d.columns]
+        return d[cols].rename(columns={"team":"Team","PS_G":"PPG","PA_G":"OPP PPG"})
 
     col1, col2 = st.columns(2)
     with col1:
         st.subheader("🔵 Eastern Conference")
-        st.dataframe(east_df.set_index("Team"), use_container_width=True, height=560)
+        st.dataframe(fmt_standings(east_df).set_index("Team"),
+                     use_container_width=True, height=560)
     with col2:
         st.subheader("🟡 Western Conference")
-        st.dataframe(west_df.set_index("Team"), use_container_width=True, height=560)
+        st.dataframe(fmt_standings(west_df).set_index("Team"),
+                     use_container_width=True, height=560)
 
     st.markdown("---")
     st.subheader("Win Total Comparison — Top 20")
-    all_teams = pd.concat([
-        east_df.assign(Conf="East"),
-        west_df.assign(Conf="West")
-    ]).reset_index(drop=True).sort_values("W", ascending=False).head(20)
-
+    top20 = all_teams.sort_values("W", ascending=False).head(20)
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        name="Wins", y=all_teams["Team"], x=all_teams["W"], orientation="h",
-        marker_color=[("#3a7bd5" if c == "East" else GOLD) for c in all_teams["Conf"]]
+        name="Wins", y=top20["team"], x=top20["W"], orientation="h",
+        marker_color=["#3a7bd5" if c=="East" else GOLD for c in top20["conference"]]
     ))
     fig.add_trace(go.Bar(
-        name="Losses", y=all_teams["Team"], x=all_teams["L"], orientation="h",
+        name="Losses", y=top20["team"], x=top20["L"], orientation="h",
         marker_color="rgba(80,80,80,0.35)"
     ))
-    fig.update_layout(**PLOTLY_THEME, barmode="stack", height=500,
+    fig.update_layout(**THEME, barmode="stack", height=520,
                       legend=dict(font=dict(size=11, color="#9ca3af")))
+    fig.update_xaxes(**AXIS)
+    fig.update_yaxes(**AXIS)
     st.plotly_chart(fig, use_container_width=True)
 
 # ── TEAM STATS ────────────────────────────────────────────────────────────────
@@ -215,34 +202,26 @@ elif page == "Team Stats":
     st.caption("Per Game Averages")
 
     tab1, tab2, tab3 = st.tabs(["📊 Per Game", "🎯 Shooting", "🛡️ Defense / Rebounds"])
-
     search = st.text_input("🔍 Search team", "")
 
-    def filter_df(df):
-        if search:
-            return df[df["Team"].str.contains(search, case=False)]
-        return df
+    def filt(df):
+        return df[df["Team"].str.contains(search, case=False)] if search else df
 
     with tab1:
-        cols = ["Team", "PPG", "APG", "RPG", "SPG", "BPG", "TOPG"]
-        cols = [c for c in cols if c in df3.columns]
-        st.dataframe(filter_df(df3[cols]).set_index("Team").sort_values("PPG", ascending=False),
-                     use_container_width=True, height=600)
-
+        cols = [c for c in ["Team","PPG","APG","RPG","SPG","BPG","TOPG"] if c in pg.columns]
+        st.dataframe(filt(pg[cols]).sort_values("PPG", ascending=False).set_index("Team"),
+                     use_container_width=True, height=620)
     with tab2:
-        cols = ["Team", "FG%", "3P%", "FT%", "3PA", "FTA"]
-        cols = [c for c in cols if c in df3.columns]
-        disp = filter_df(df3[cols]).copy()
-        for pct_col in ["FG%", "3P%", "FT%"]:
-            if pct_col in disp.columns:
-                disp[pct_col] = (disp[pct_col] * 100).round(1).astype(str) + "%"
-        st.dataframe(disp.set_index("Team"), use_container_width=True, height=600)
-
+        disp = pg.copy()
+        for c in ["FG_PCT","FG3_PCT","FT_PCT"]:
+            if c in disp.columns:
+                disp[c] = (disp[c]*100).round(1).astype(str)+"%"
+        cols = [c for c in ["Team","FG_PCT","FG3_PCT","FT_PCT","3PA","FTA"] if c in disp.columns]
+        st.dataframe(filt(disp[cols]).set_index("Team"), use_container_width=True, height=620)
     with tab3:
-        cols = ["Team", "RPG", "ORB", "DRB", "BPG", "SPG", "PF"]
-        cols = [c for c in cols if c in df3.columns]
-        st.dataframe(filter_df(df3[cols]).set_index("Team").sort_values("RPG", ascending=False),
-                     use_container_width=True, height=600)
+        cols = [c for c in ["Team","RPG","ORB","DRB","BPG","SPG","PF"] if c in pg.columns]
+        st.dataframe(filt(pg[cols]).sort_values("RPG", ascending=False).set_index("Team"),
+                     use_container_width=True, height=620)
 
 # ── ADVANCED ──────────────────────────────────────────────────────────────────
 elif page == "Advanced":
@@ -250,39 +229,37 @@ elif page == "Advanced":
     st.caption("Offensive · Defensive · Four Factors")
 
     col1, col2 = st.columns(2)
+    valid = adv.dropna(subset=["ORtg","DRtg"]).copy()
 
     with col1:
-        st.subheader("ORtg vs DRtg (Scatter)")
-        valid = df4.dropna(subset=["ORtg", "DRtg"])
+        st.subheader("ORtg vs DRtg")
         avg_off = valid["ORtg"].mean()
         avg_def = valid["DRtg"].mean()
-
-        def quadrant_color(row):
+        def qcolor(row):
             if row["ORtg"] > avg_off and row["DRtg"] < avg_def: return GOLD
             if row["ORtg"] < avg_off and row["DRtg"] > avg_def: return "#ef4444"
             return "#6b7280"
-
-        valid = valid.copy()
-        valid["color"] = valid.apply(quadrant_color, axis=1)
+        valid["color"] = valid.apply(qcolor, axis=1)
         fig = go.Figure()
-        fig.add_vline(x=avg_def, line_dash="dash", line_color="#1f2329")
-        fig.add_hline(y=avg_off, line_dash="dash", line_color="#1f2329")
+        fig.add_vline(x=avg_def, line_dash="dash", line_color="#2d3139")
+        fig.add_hline(y=avg_off, line_dash="dash", line_color="#2d3139")
         fig.add_trace(go.Scatter(
             x=valid["DRtg"], y=valid["ORtg"], mode="markers+text",
             text=valid["Team"].str.split().str[-1],
             textposition="top center", textfont=dict(size=9, color="#9ca3af"),
             marker=dict(size=10, color=valid["color"]),
-            hovertext=valid["Team"] + "<br>ORtg: " + valid["ORtg"].astype(str) +
-                      " | DRtg: " + valid["DRtg"].astype(str)
+            hovertemplate="<b>%{text}</b><br>ORtg: %{y}<br>DRtg: %{x}<extra></extra>"
         ))
-        fig.update_layout(**PLOTLY_THEME, height=400,
+        fig.update_layout(**THEME, height=400, showlegend=False,
                           xaxis_title="← Better   DEF RTG   Worse →",
-                          yaxis_title="OFF RTG", showlegend=False)
+                          yaxis_title="OFF RTG")
+        fig.update_xaxes(**AXIS)
+        fig.update_yaxes(**AXIS)
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
         st.subheader("Net Rating Ranking")
-        nrtg = df4.dropna(subset=["NRtg"]).sort_values("NRtg")
+        nrtg = adv.dropna(subset=["NRtg"]).sort_values("NRtg")
         colors = ["#22c55e" if v > 0 else "#ef4444" for v in nrtg["NRtg"]]
         fig2 = go.Figure(go.Bar(
             x=nrtg["NRtg"], y=nrtg["Team"], orientation="h",
@@ -290,56 +267,101 @@ elif page == "Advanced":
             text=nrtg["NRtg"].round(1), textposition="outside",
             textfont=dict(size=9, color="#9ca3af")
         ))
-        fig2.update_layout(**PLOTLY_THEME, height=400, showlegend=False)
+        fig2.update_layout(**THEME, height=400, showlegend=False)
+        fig2.update_xaxes(**AXIS)
+        fig2.update_yaxes(**AXIS)
         st.plotly_chart(fig2, use_container_width=True)
 
     st.markdown("---")
     st.subheader("Full Advanced Table")
-    search_adv = st.text_input("🔍 Search team", "", key="adv_search")
-    adv_cols = ["Team", "ORtg", "DRtg", "NRtg", "Pace", "TS%", "eFG%", "TOV%", "ORB%", "Age"]
-    adv_cols = [c for c in adv_cols if c in df4.columns]
-    disp = df4[adv_cols].copy()
+    search_adv = st.text_input("🔍 Search team", "", key="adv")
+    adv_cols = [c for c in ["Team","ORtg","DRtg","NRtg","Pace","TS%","eFG%","TOV%","ORB%","Age"] if c in adv.columns]
+    disp = adv[adv_cols].copy()
     if search_adv:
         disp = disp[disp["Team"].str.contains(search_adv, case=False)]
-    st.dataframe(disp.set_index("Team").sort_values("NRtg", ascending=False),
-                 use_container_width=True, height=500)
+    if "NRtg" in disp.columns:
+        disp = disp.sort_values("NRtg", ascending=False)
+    st.dataframe(disp.set_index("Team"), use_container_width=True, height=520)
 
 # ── ATTENDANCE ────────────────────────────────────────────────────────────────
 elif page == "Attendance":
     st.title("ATTENDANCE")
     st.caption("Arena Capacity & Fan Engagement")
 
-    att = df4.dropna(subset=["Attend./G"]).sort_values("Attend./G", ascending=False)
+    att_col = "Attend./G"
+    att = adv.dropna(subset=[att_col]).sort_values(att_col, ascending=False).copy()
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total Attendance", f"{att['Attend.'].sum()/1e6:.2f}M")
-    c2.metric("Avg Per Game", f"{att['Attend./G'].mean():,.0f}")
-    c3.metric("Top Draw", att.iloc[0]["Team"], f"{att.iloc[0]['Attend./G']:,.0f} /game")
+    if att.empty:
+        st.warning("Attendance data not available in current dataset.")
+    else:
+        c1,c2,c3 = st.columns(3)
+        total_att = att["Attend."].sum() if "Attend." in att.columns else 0
+        c1.metric("Total Attendance", f"{total_att/1e6:.2f}M" if total_att else "N/A")
+        c2.metric("Avg Per Game", f"{att[att_col].mean():,.0f}")
+        c3.metric("Top Draw", att.iloc[0]["Team"], f"{att.iloc[0][att_col]:,.0f} /game")
+
+        st.markdown("---")
+        col1, col2 = st.columns([3, 2])
+
+        with col1:
+            st.subheader("Attendance Per Game — All Arenas")
+            n = len(att)
+            colors = [GOLD if i==0 else ("rgba(200,168,75,0.45)" if i<5 else "rgba(200,168,75,0.15)")
+                      for i in range(n)]
+            fig = go.Figure(go.Bar(
+                x=att[att_col], y=att["Team"], orientation="h",
+                marker_color=colors,
+                text=att[att_col].apply(lambda x: f"{x:,.0f}"),
+                textposition="outside", textfont=dict(size=9, color="#9ca3af")
+            ))
+            fig.update_layout(**THEME, height=720, showlegend=False)
+            fig.update_xaxes(**AXIS, tickformat=",")
+            fig.update_yaxes(**AXIS)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Arena Directory")
+            a_cols = [c for c in ["Team","Arena","Attend.","Attend./G"] if c in att.columns]
+            disp = att[a_cols].copy()
+            if "Attend." in disp.columns:
+                disp["Attend."] = disp["Attend."].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
+            disp[att_col] = disp[att_col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
+            st.dataframe(disp.set_index("Team"), use_container_width=True, height=720)
+
+# ── PIPELINE LOG ──────────────────────────────────────────────────────────────
+elif page == "Pipeline Log":
+    st.title("PIPELINE LOG")
+    st.caption("ETL run history")
+
+    log_df = read_pipeline_log()
+    if log_df.empty:
+        st.info("No pipeline runs recorded yet.")
+    else:
+        log_df["source"] = log_df["source"].apply(
+            lambda s: "🟢 NBA API" if s == "nba_api" else "🟡 Excel Fallback"
+        )
+        st.dataframe(log_df, use_container_width=True)
 
     st.markdown("---")
-    col1, col2 = st.columns([3, 2])
-
-    with col1:
-        st.subheader("Attendance Per Game — All Arenas")
-        colors = [GOLD if i == 0 else ("rgba(200,168,75,0.45)" if i < 5 else "rgba(200,168,75,0.15)")
-                  for i in range(len(att))]
-        fig = go.Figure(go.Bar(
-            x=att["Attend./G"], y=att["Team"], orientation="h",
-            marker_color=colors,
-            text=att["Attend./G"].apply(lambda x: f"{x:,.0f}"),
-            textposition="outside", textfont=dict(size=9, color="#9ca3af")
-        ))
-        fig.update_layout(**PLOTLY_THEME, height=700, showlegend=False)
-        fig.update_xaxes(tickformat=",")
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col2:
-        st.subheader("Arena Directory")
-        arena_cols = ["Team", "Arena", "Attend.", "Attend./G"]
-        arena_cols = [c for c in arena_cols if c in df4.columns]
-        disp = att[arena_cols].copy()
-        if "Attend." in disp.columns:
-            disp["Attend."] = disp["Attend."].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
-        if "Attend./G" in disp.columns:
-            disp["Attend./G"] = disp["Attend./G"].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
-        st.dataframe(disp.set_index("Team"), use_container_width=True, height=700)
+    st.subheader("Pipeline Architecture")
+    st.code("""
+stats.nba.com  (nba_api)
+       │  on failure
+       ▼
+nba_25-26_stats.xlsx  (Excel fallback)
+       │
+       ▼  pipeline.py
+   Extract → Transform → Clean
+       │
+       ▼
+  SQLite  (nba_stats.db)
+  ├── team_pergame
+  ├── team_totals
+  ├── standings
+  ├── team_advanced
+  └── pipeline_log
+       │
+       ▼
+  app.py  (Streamlit)
+  └── @st.cache_data (TTL 300s)
+    """, language="text")
