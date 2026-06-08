@@ -59,7 +59,7 @@ all_teams = standings.reset_index(drop=True)
 
 ts, src = last_updated()
 src_badge = (f'<span class="source-badge badge-api">🟢 NBA API</span>'
-             if src == "balldontlie_api"
+             if src == "github"
              else f'<span class="source-badge badge-excel">🟡 Excel Fallback</span>')
 
 # ── Sidebar ───────────────────────────────────────────────────────────────────
@@ -77,11 +77,11 @@ with st.sidebar:
         st.cache_data.clear()
         with st.spinner("Running ETL pipeline..."):
             source_used = run_pipeline()
-        label = '🟢 balldontlie API' if source_used == 'balldontlie_api' else '🟡 Excel Fallback'
+        label = '🟢 GitHub' if source_used == 'github' else '🟡 Local Excel'
         st.success(f"✓ Updated from **{label}**")
         st.rerun()
 
-    st.caption("Data: NBA 2025-26 Regular Season  \nPipeline: balldontlie.io → SQLite")
+    st.caption("Data: NBA 2025-26 Regular Season  \nPipeline: GitHub → SQLite")
 
 # ── OVERVIEW ──────────────────────────────────────────────────────────────────
 if page == "Overview":
@@ -339,14 +339,14 @@ elif page == "Pipeline Log":
         st.info("No pipeline runs recorded yet.")
     else:
         log_df["source"] = log_df["source"].apply(
-            lambda s: "🟢 balldontlie API" if s == "nba_api" else "🟡 Excel Fallback"
+            lambda s: "🟢 GitHub" if s == "nba_api" else "🟡 Local Excel"
         )
         st.dataframe(log_df, use_container_width=True)
 
     st.markdown("---")
     st.subheader("Pipeline Architecture")
     st.code("""
-balldontlie.io API
+GitHub (vcchen1120/NBA-25-26-season-stats-dashboard)
        │  on failure
        ▼
 nba_25-26_stats.xlsx  (Excel fallback)
