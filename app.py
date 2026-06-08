@@ -66,7 +66,7 @@ src_badge = (f'<span class="source-badge badge-api">🟢 NBA API</span>'
 with st.sidebar:
     st.markdown("## 🏀 NBA 25-26")
     st.markdown("---")
-    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance", "Pipeline Log"])
+    page = st.radio("Navigate", ["Overview", "Standings", "Team Stats", "Advanced", "Attendance"])
     st.markdown("---")
 
     st.markdown(f"**Last Updated**  \n`{ts}`")
