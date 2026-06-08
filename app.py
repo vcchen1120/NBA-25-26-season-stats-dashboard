@@ -4,7 +4,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from pipeline import (
     run_pipeline, db_exists,
-    read_pergame, read_standings, read_advanced, read_totals, read_pipeline_log, last_updated
+    read_pergame, read_standings, read_advanced, read_pipeline_log, last_updated
 )
 
 st.set_page_config(
